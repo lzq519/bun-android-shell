@@ -2,8 +2,6 @@ name: build-bun-android
 
 on:
   workflow_dispatch:
-  push:
-    branches: [ main ]
 
 jobs:
   build:
@@ -14,10 +12,9 @@ jobs:
         arch: [armv7a, arm64]
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: install dependencies
         run: |
           sudo apt update
           sudo apt install -y \
@@ -31,49 +28,35 @@ jobs:
             curl \
             unzip
 
-      - name: Install Zig
+      - name: install zig 0.11
         run: |
-          curl -L https://ziglang.org/download/0.12.0/zig-linux-x86_64-0.12.0.tar.xz | tar -xJ
-          sudo mv zig-linux-x86_64-0.12.0 /opt/zig
+          curl -L https://ziglang.org/download/0.11.0/zig-linux-x86_64-0.11.0.tar.xz | tar -xJ
+          sudo mv zig-linux-x86_64-0.11.0 /opt/zig
           echo "/opt/zig" >> $GITHUB_PATH
 
-      - name: Download Android NDK
+      - name: download android ndk
         run: |
           curl -L https://dl.google.com/android/repository/android-ndk-r26d-linux.zip -o ndk.zip
           unzip -q ndk.zip
           echo "ANDROID_NDK=$PWD/android-ndk-r26d" >> $GITHUB_ENV
 
-      - name: Clone Bun
+      - name: clone bun
         run: |
           git clone https://github.com/oven-sh/bun.git
           cd bun
           git submodule update --init --recursive
 
-      - name: Set target
-        run: |
-          if [ "${{ matrix.arch }}" = "armv7a" ]; then
-            echo "TARGET=armv7a-linux-androideabi" >> $GITHUB_ENV
-            echo "API=21" >> $GITHUB_ENV
-          else
-            echo "TARGET=aarch64-linux-android" >> $GITHUB_ENV
-            echo "API=21" >> $GITHUB_ENV
-          fi
-
-      - name: Setup NDK toolchain
-        run: |
-          TOOLCHAIN=$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64
-          echo "CC=$TOOLCHAIN/bin/${TARGET}${API}-clang" >> $GITHUB_ENV
-          echo "CXX=$TOOLCHAIN/bin/${TARGET}${API}-clang++" >> $GITHUB_ENV
-
-      - name: Build Bun
+      - name: apply patch
         run: |
           cd bun
-          zig build \
-            -Dtarget=${TARGET} \
-            -Drelease-fast
+          patch -p1 < ../patches/android-target.patch
 
-      - name: Upload artifact
+      - name: build
+        run: |
+          bash scripts/build-android.sh ${{ matrix.arch }}
+
+      - name: upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: bun-${{ matrix.arch }}
-          path: bun/build/bin/bun
+          path: out/bun
