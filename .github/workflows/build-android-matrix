@@ -1,0 +1,245 @@
+name: Build Bun for Android
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+env:
+  BUN_VERSION: "1.1.0"  # 可根据需要修改版本
+  NDK_VERSION: "r26d"   # Android NDK版本
+  ANDROID_API: "24"     # 最低Android API级别
+
+jobs:
+  build-android:
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        include:
+          - arch: arm64-v8a
+            zig_target: aarch64-linux-android
+            ndk_triple: aarch64-linux-android
+            cmake_arch: arm64-v8a
+          - arch: armeabi-v7a
+            zig_target: arm-linux-androideabi
+            ndk_triple: armv7a-linux-androideabi
+            cmake_arch: armeabi-v7a
+    
+    steps:
+      - name: Checkout Bun source
+        uses: actions/checkout@v4
+        with:
+          repository: oven-sh/bun
+          ref: bun-v${{ env.BUN_VERSION }}
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Setup Android NDK
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: ${{ env.NDK_VERSION }}
+          add-to-path: true
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake ninja-build \
+            libssl-dev pkg-config \
+            clang lld \
+            ccache \
+            python3 python3-pip
+
+      - name: Setup Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.12.0-dev.3180+83e578a18  # Bun使用的Zig版本
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Cache ccache
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/ccache
+          key: ${{ runner.os }}-android-${{ matrix.arch }}-${{ hashFiles('**/CMakeLists.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-android-${{ matrix.arch }}-
+
+      - name: Setup environment variables
+        run: |
+          echo "ANDROID_NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}" >> $GITHUB_ENV
+          echo "NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}" >> $GITHUB_ENV
+          
+          # 设置工具链路径
+          TOOLCHAIN="${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64"
+          echo "TOOLCHAIN=$TOOLCHAIN" >> $GITHUB_ENV
+          
+          # 设置编译器
+          echo "CC=$TOOLCHAIN/bin/${{ matrix.ndk_triple }}${{ env.ANDROID_API }}-clang" >> $GITHUB_ENV
+          echo "CXX=$TOOLCHAIN/bin/${{ matrix.ndk_triple }}${{ env.ANDROID_API }}-clang++" >> $GITHUB_ENV
+          echo "AR=$TOOLCHAIN/bin/llvm-ar" >> $GITHUB_ENV
+          echo "AS=$TOOLCHAIN/bin/llvm-as" >> $GITHUB_ENV
+          echo "LD=$TOOLCHAIN/bin/ld" >> $GITHUB_ENV
+          echo "RANLIB=$TOOLCHAIN/bin/llvm-ranlib" >> $GITHUB_ENV
+          echo "STRIP=$TOOLCHAIN/bin/llvm-strip" >> $GITHUB_ENV
+
+      - name: Create CMake toolchain file
+        run: |
+          cat > ${{ github.workspace }}/android_toolchain.cmake << 'EOF'
+          set(CMAKE_SYSTEM_NAME Android)
+          set(CMAKE_SYSTEM_VERSION ${{ env.ANDROID_API }})
+          set(CMAKE_ANDROID_ARCH_ABI ${{ matrix.cmake_arch }})
+          set(CMAKE_ANDROID_NDK ${{ steps.setup-ndk.outputs.ndk-path }})
+          set(CMAKE_ANDROID_STL_TYPE c++_static)
+          set(CMAKE_ANDROID_NDK_TOOLCHAIN_VERSION clang)
+          
+          # 使用Zig作为交叉编译器
+          set(CMAKE_C_COMPILER ${{ env.CC }})
+          set(CMAKE_CXX_COMPILER ${{ env.CXX }})
+          set(CMAKE_AR ${{ env.AR }})
+          set(CMAKE_RANLIB ${{ env.RANLIB }})
+          set(CMAKE_STRIP ${{ env.STRIP }})
+          
+          # 查找路径
+          set(CMAKE_FIND_ROOT_PATH ${{ steps.setup-ndk.outputs.ndk-path }}/sysroot)
+          set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+          set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+          set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+          
+          # 编译标志
+          set(CMAKE_C_FLAGS "-fPIC -fPIE -O3 -DANDROID -D__ANDROID_API__=${{ env.ANDROID_API }}")
+          set(CMAKE_CXX_FLAGS "-fPIC -fPIE -O3 -DANDROID -D__ANDROID_API__=${{ env.ANDROID_API }} -stdlib=libc++")
+          set(CMAKE_EXE_LINKER_FLAGS "-pie -static-libstdc++ -llog -landroid")
+          EOF
+
+      - name: Configure Bun build for Android
+        run: |
+          mkdir -p build
+          cd build
+          
+          # 设置Zig目标
+          export ZIG_TARGET="${{ matrix.zig_target }}"
+          
+          cmake .. \
+            -GNinja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/android_toolchain.cmake \
+            -DCMAKE_SYSTEM_NAME=Android \
+            -DCMAKE_SYSTEM_VERSION=${{ env.ANDROID_API }} \
+            -DCMAKE_ANDROID_ARCH_ABI=${{ matrix.cmake_arch }} \
+            -DCMAKE_ANDROID_NDK=${{ steps.setup-ndk.outputs.ndk-path }} \
+            -DUSE_ZIG=ON \
+            -DZIG_TARGET="$ZIG_TARGET" \
+            -DENABLE_CCACHE=ON \
+            -DUSE_STATIC_LIBC=ON \
+            -DBUN_LINK_ONLY=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build Bun
+        run: |
+          cd build
+          ninja -j$(nproc) 2>&1 | tee build.log
+          
+          # 检查构建结果
+          if [ ! -f "bun" ] && [ ! -f "bun-profile" ]; then
+            echo "Error: Bun binary not found!"
+            exit 1
+          fi
+
+      - name: Strip and package binary
+        run: |
+          cd build
+          
+          # 查找生成的二进制文件
+          BUN_BINARY=$(find . -maxdepth 1 -name "bun*" -type f -executable | head -1)
+          
+          if [ -z "$BUN_BINARY" ]; then
+            echo "Error: Could not find bun binary"
+            exit 1
+          fi
+          
+          echo "Found binary: $BUN_BINARY"
+          
+          # 复制并重命名
+          cp "$BUN_BINARY" "bun-android-${{ matrix.arch }}"
+          
+          # 使用NDK工具strip减小体积
+          ${{ env.STRIP }} --strip-all "bun-android-${{ matrix.arch }}"
+          
+          # 验证架构
+          file "bun-android-${{ matrix.arch }}"
+          
+          # 创建压缩包
+          tar czf "bun-android-${{ matrix.arch }}.tar.gz" "bun-android-${{ matrix.arch }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bun-android-${{ matrix.arch }}
+          path: build/bun-android-${{ matrix.arch }}.tar.gz
+          retention-days: 30
+
+      - name: Upload to Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: build/bun-android-${{ matrix.arch }}.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # 可选：测试在Termux环境中的兼容性
+  test-termux:
+    needs: build-android
+    runs-on: ubuntu-22.04
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Setup Termux environment test
+        run: |
+          # 安装Termux模拟环境或推送到真实设备测试
+          # 这里可以集成Firebase Test Lab或连接到物理设备
+          echo "Testing ARM64 binary..."
+          file artifacts/bun-android-arm64-v8a/bun-android-arm64-v8a.tar.gz
+          
+          echo "Testing ARMv7 binary..."
+          file artifacts/bun-android-armeabi-v7a/bun-android-armeabi-v7a.tar.gz
+
+  # 合并多架构构建结果
+  merge-releases:
+    needs: build-android
+    runs-on: ubuntu-22.04
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all-artifacts
+          pattern: bun-android-*
+
+      - name: Create universal package
+        run: |
+          mkdir -p bun-android-universal
+          cp all-artifacts/*/bun-android-*.tar.gz bun-android-universal/
+          cd bun-android-universal
+          
+          # 创建包含所有架构的压缩包
+          tar czf ../bun-android-all.tar.gz *.tar.gz
+
+      - name: Upload universal package
+        uses: softprops/action-gh-release@v1
+        with:
+          files: bun-android-all.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
