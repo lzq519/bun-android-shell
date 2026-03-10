@@ -1,73 +1,79 @@
-name: Build Bun for Android ARM64
+name: build-bun-android
 
-on: [workflow_dispatch]
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
 
 jobs:
   build:
     runs-on: ubuntu-22.04
+
+    strategy:
+      matrix:
+        arch: [armv7a, arm64]
+
     steps:
-      - name: Checkout Bun source code
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          repository: oven-sh/bun
-          ref: bun-v1.1.20
-          submodules: recursive
-          fetch-depth: 0
 
-      - name: Install Android NDK
-        uses: nttld/setup-ndk@v1
-        with:
-          ndk-version: r25b
-          add-to-path: true
-
-      - name: Install system dependencies
+      - name: Install dependencies
         run: |
-          sudo apt update && sudo apt install -y \
-            build-essential cmake ninja-build python3 python3-pip \
-            libssl-dev git curl unzip
-          # 跳过不必要的升级，避免耗时
-          sudo apt upgrade -y || true
+          sudo apt update
+          sudo apt install -y \
+            build-essential \
+            clang \
+            lld \
+            cmake \
+            ninja-build \
+            python3 \
+            git \
+            curl \
+            unzip
 
-      - name: Install Bun runtime (仅用于依赖管理)
+      - name: Install Zig
         run: |
-          curl -fsSL https://bun.sh/install | bash
-          export PATH="$HOME/.bun/bin:$PATH"
-          echo "PATH=$HOME/.bun/bin:$PATH" >> $GITHUB_ENV
+          curl -L https://ziglang.org/download/0.12.0/zig-linux-x86_64-0.12.0.tar.xz | tar -xJ
+          sudo mv zig-linux-x86_64-0.12.0 /opt/zig
+          echo "/opt/zig" >> $GITHUB_PATH
 
-      - name: Build Bun for Linux ARM64 (Android compatible)
+      - name: Download Android NDK
         run: |
-          # 配置交叉编译环境（Android NDK）
-          export ANDROID_NDK_ROOT=$ANDROID_NDK_HOME
-          export TARGET_ARCH=aarch64
-          export TOOLCHAIN=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64
-          
-          # 指定 NDK 编译器
-          export CC=$TOOLCHAIN/bin/aarch64-linux-android24-clang
-          export CXX=$TOOLCHAIN/bin/aarch64-linux-android24-clang++
-          export AR=$TOOLCHAIN/bin/llvm-ar
-          export LD=$TOOLCHAIN/bin/ld.lld
-          export CFLAGS="-fPIC --target=aarch64-linux-android24"
-          export CXXFLAGS="-fPIC --target=aarch64-linux-android24"
-          
-          # 关键：使用 Bun 源码内置的 Zig（无需手动下载）
-          export PATH="$PWD/zig:$PATH"
-          # 安装 Bun 依赖
-          bun install --force
-          
-          # 执行 Bun 官方编译脚本（自动调用内置 Zig）
-          ./scripts/build-linux.sh --arch $TARGET_ARCH \
-            --cc $CC \
-            --cxx $CXX \
-            --ar $AR \
-            --ld $LD
-          
-          # 验证编译产物
-          ls -la ./build/out/bun-linux-$TARGET_ARCH
-          file ./build/out/bun-linux-$TARGET_ARCH
+          curl -L https://dl.google.com/android/repository/android-ndk-r26d-linux.zip -o ndk.zip
+          unzip -q ndk.zip
+          echo "ANDROID_NDK=$PWD/android-ndk-r26d" >> $GITHUB_ENV
 
-      - name: Upload build artifact
+      - name: Clone Bun
+        run: |
+          git clone https://github.com/oven-sh/bun.git
+          cd bun
+          git submodule update --init --recursive
+
+      - name: Set target
+        run: |
+          if [ "${{ matrix.arch }}" = "armv7a" ]; then
+            echo "TARGET=armv7a-linux-androideabi" >> $GITHUB_ENV
+            echo "API=21" >> $GITHUB_ENV
+          else
+            echo "TARGET=aarch64-linux-android" >> $GITHUB_ENV
+            echo "API=21" >> $GITHUB_ENV
+          fi
+
+      - name: Setup NDK toolchain
+        run: |
+          TOOLCHAIN=$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64
+          echo "CC=$TOOLCHAIN/bin/${TARGET}${API}-clang" >> $GITHUB_ENV
+          echo "CXX=$TOOLCHAIN/bin/${TARGET}${API}-clang++" >> $GITHUB_ENV
+
+      - name: Build Bun
+        run: |
+          cd bun
+          zig build \
+            -Dtarget=${TARGET} \
+            -Drelease-fast
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: bun-android-arm64-v8a
-          path: ./build/out/bun-linux-aarch64
-          retention-days: 7
+          name: bun-${{ matrix.arch }}
+          path: bun/build/bin/bun
