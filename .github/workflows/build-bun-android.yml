@@ -2,7 +2,7 @@ name: Build Bun for Android (Bytecode + Runtime)
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   workflow_dispatch:
 
 jobs:
@@ -35,48 +35,37 @@ jobs:
 
       - name: Setup build environment
         run: |
-          # 安装系统依赖
           sudo apt update && sudo apt install -y \
             build-essential cmake ninja-build python3 python3-pip \
             curl unzip pkg-config libssl-dev file git
-          
-          # 安装 Bun 运行时（用于生成字节码）
           curl -fsSL https://bun.sh/install | bash
           export PATH="$HOME/.bun/bin:$PATH"
           echo "PATH=$HOME/.bun/bin:$PATH" >> $GITHUB_ENV
-          
-          # 验证 Bun 安装
           bun --version
 
-      - name: Step 1: 编译 Bun 源码为 Linux ARM 版本（用于 Android 运行）
+      - name: Step 1: Build Bun for Linux ARM (Android compatible)
         run: |
           cd $GITHUB_WORKSPACE
-          
-          # 配置 NDK 交叉编译环境
-          export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
-          export CC=$TOOLCHAIN/bin/${{ matrix.arch_config.target_triple }}24-clang
-          export CXX=$TOOLCHAIN/bin/${{ matrix.arch_config.target_triple }}24-clang++
-          export AR=$TOOLCHAIN/bin/llvm-ar
-          export LD=$TOOLCHAIN/bin/ld.lld
+          # 先赋值变量，避免YAML解析错误
+          TRIPLE="${{ matrix.arch_config.target_triple }}"
+          TOOLCHAIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64"
+          export CC="$TOOLCHAIN/bin/${TRIPLE}24-clang"
+          export CXX="$TOOLCHAIN/bin/${TRIPLE}24-clang++"
+          export AR="$TOOLCHAIN/bin/llvm-ar"
+          export LD="$TOOLCHAIN/bin/ld.lld"
           export CFLAGS="-fPIC"
           export CXXFLAGS="-fPIC"
           
-          # 安装 Bun 依赖
           bun install --force
-          
-          # 编译 Bun 为 ARM 架构可执行文件（兼容 Android）
           bun build src/bun.ts \
             --compile \
-            --outfile bun-linux-${{ matrix.arch_config.arch_name }} \
+            --outfile "bun-linux-${{ matrix.arch_config.arch_name }}" \
             --minify
-          
-          # 验证产物架构
-          file ./bun-linux-${{ matrix.arch_config.arch_name }}
+          file "./bun-linux-${{ matrix.arch_config.arch_name }}"
 
-      - name: Step 2: 示例 - 编译 TS 为 Bun 字节码（Android 可运行）
+      - name: Step 2: Compile TS to Bun Bytecode (Android runnable)
         run: |
           cd $GITHUB_WORKSPACE
-          # 创建测试 TS 文件
           cat > test.ts << EOF
           interface User {
             name: string;
@@ -86,19 +75,16 @@ jobs:
           console.log(\`Hello \${user.name}!\`);
           EOF
           
-          # 编译 TS 为 Bun 字节码（跨平台，Android 可执行）
           bun build test.ts \
             --compile \
-            --outfile test-android-${{ matrix.arch_config.arch_name }}.bun \
+            --outfile "test-android-${{ matrix.arch_config.arch_name }}.bun" \
             --target=bun
-          
-          # 验证字节码
-          ls -la ./test-android-${{ matrix.arch_config.arch_name }}.bun
+          ls -la "./test-android-${{ matrix.arch_config.arch_name }}.bun"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: bun-android-${{ matrix.arch_config.arch_name }}
+          name: "bun-android-${{ matrix.arch_config.arch_name }}"
           path: |
             ./bun-linux-${{ matrix.arch_config.arch_name }}
             ./test-android-${{ matrix.arch_config.arch_name }}.bun
