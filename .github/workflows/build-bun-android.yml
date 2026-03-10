@@ -6,25 +6,53 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: Checkout
+      - name: Checkout Bun source code
         uses: actions/checkout@v4
         with:
           repository: oven-sh/bun
           ref: bun-v1.1.20
           submodules: recursive
-      - name: Install NDK
+          # 关键：指定路径，确保工作目录正确
+          path: bun-source
+
+      - name: Install Android NDK
         uses: nttld/setup-ndk@v1
         with:
           ndk-version: r25b
-      - name: Install Bun
+          add-to-path: true
+
+      - name: Install Bun runtime
         run: curl -fsSL https://bun.sh/install | bash
-      - name: Build Bun
+
+      - name: Build Bun for Android ARM64
         run: |
+          # 进入 Bun 源码根目录（关键修复）
+          cd bun-source
+          
+          # 配置环境变量
           export PATH="$HOME/.bun/bin:$PATH"
+          export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
+          export CC=$TOOLCHAIN/bin/aarch64-linux-android24-clang
+          export CXX=$TOOLCHAIN/bin/aarch64-linux-android24-clang++
+          export CFLAGS="-fPIC"
+          export CXXFLAGS="-fPIC"
+          
+          # 安装依赖
           bun install --force
-          bun build src/bun.ts --compile --outfile bun-android-arm64-v8a --minify
-      - name: Upload
+          
+          # 关键：使用正确的 Bun 源码入口文件
+          # Bun 源码的实际入口是 packages/bun/src/main.ts
+          bun build packages/bun/src/main.ts \
+            --compile \
+            --outfile ../bun-android-arm64-v8a \
+            --minify \
+            --target=bun \
+            --cc $CC \
+            --cxx $CXX
+
+      - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: bun-android-arm64-v8a
           path: ./bun-android-arm64-v8a
+          retention-days: 7
