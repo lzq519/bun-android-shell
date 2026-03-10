@@ -20,24 +20,13 @@ jobs:
           ndk-version: r25b
           add-to-path: true
 
-      - name: Install system dependencies (不含zig)
+      - name: Install system dependencies
         run: |
           sudo apt update && sudo apt install -y \
             build-essential cmake ninja-build python3 python3-pip \
             libssl-dev git curl unzip
-          # 31个包可升级不影响编译，跳过升级避免耗时
+          # 跳过不必要的升级，避免耗时
           sudo apt upgrade -y || true
-
-      - name: 手动安装 Zig 编译器（Bun 编译依赖）
-        run: |
-          # 下载 Bun 兼容的 Zig 版本（0.11.0，适配 Bun v1.1.20）
-          ZIG_VERSION=0.11.0
-          ZIG_ARCH=x86_64-linux
-          curl -fsSL https://ziglang.org/download/$ZIG_VERSION/zig-$ZIG_ARCH-$ZIG_VERSION.tar.xz -o zig.tar.xz
-          # 解压到 /usr/local （加入环境变量）
-          sudo tar -xf zig.tar.xz -C /usr/local --strip-components=1
-          # 验证 Zig 安装
-          zig version
 
       - name: Install Bun runtime (仅用于依赖管理)
         run: |
@@ -47,11 +36,12 @@ jobs:
 
       - name: Build Bun for Linux ARM64 (Android compatible)
         run: |
-          # 配置交叉编译环境
+          # 配置交叉编译环境（Android NDK）
           export ANDROID_NDK_ROOT=$ANDROID_NDK_HOME
           export TARGET_ARCH=aarch64
           export TOOLCHAIN=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64
           
+          # 指定 NDK 编译器
           export CC=$TOOLCHAIN/bin/aarch64-linux-android24-clang
           export CXX=$TOOLCHAIN/bin/aarch64-linux-android24-clang++
           export AR=$TOOLCHAIN/bin/llvm-ar
@@ -59,17 +49,23 @@ jobs:
           export CFLAGS="-fPIC --target=aarch64-linux-android24"
           export CXXFLAGS="-fPIC --target=aarch64-linux-android24"
           
-          # 安装 Bun 源码依赖
+          # 关键：使用 Bun 源码内置的 Zig（无需手动下载）
+          export PATH="$PWD/zig:$PATH"
+          # 安装 Bun 依赖
           bun install --force
           
-          # 执行 Bun 官方编译脚本
-          ./scripts/build-linux.sh --arch $TARGET_ARCH
+          # 执行 Bun 官方编译脚本（自动调用内置 Zig）
+          ./scripts/build-linux.sh --arch $TARGET_ARCH \
+            --cc $CC \
+            --cxx $CXX \
+            --ar $AR \
+            --ld $LD
           
-          # 验证产物
+          # 验证编译产物
           ls -la ./build/out/bun-linux-$TARGET_ARCH
           file ./build/out/bun-linux-$TARGET_ARCH
 
-      - name: Upload artifact
+      - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: bun-android-arm64-v8a
