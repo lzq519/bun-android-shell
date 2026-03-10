@@ -1,0 +1,11 @@
+diff --git a/build.zig b/build.zig
+index 123456..abcdef 100644
+--- a/build.zig
++++ b/build.zig
+@@
+ const target = b.standardTargetOptions(.{});
+
++// allow android targets
++if (target.result.os.tag == .android) {
++    std.log.info("building for android", .{});
++}
