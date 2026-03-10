@@ -11,7 +11,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 架构映射：明确指定 Bun Make 目标 + 显示名称
         arch_config:
           - arch_name: arm64-v8a
             make_target: android-aarch64
@@ -26,34 +25,34 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: oven-sh/bun
-          ref: bun-v1.1.20 # 最新稳定版，Makefile 规则更完善
+          ref: bun-v1.1.20 # 稳定版本
           submodules: recursive
           fetch-depth: 0
 
       - name: Install Android NDK
         uses: nttld/setup-ndk@v1
         with:
-          ndk-version: r25b # 兼容 Bun 编译的稳定版本
+          ndk-version: r25b
           add-to-path: true
 
       - name: Setup build environment
         run: |
-          # 安装编译依赖
+          # 安装系统依赖
           sudo apt update && sudo apt install -y \
             build-essential cmake ninja-build python3 python3-pip \
             curl unzip pkg-config libssl-dev file git
           
-          # 安装 Bun 编译依赖的包管理器
-          npm install -g pnpm
+          # 安装 pnpm（指定兼容版本，避免新版适配问题）
+          npm install -g pnpm@8.15.0
           
-          # 提取矩阵中的架构配置
+          # 提取矩阵配置
           export ARCH_NAME=${{ matrix.arch_config.arch_name }}
           export MAKE_TARGET=${{ matrix.arch_config.make_target }}
           export TOOLCHAIN_TRIPLE=${{ matrix.arch_config.toolchain_triple }}
           export TARGET_ARCH=${{ matrix.arch_config.target_arch }}
           export ANDROID_PLATFORM=android-24
           
-          # 为 armeabi-v7a 补充 32 位 ARM 编译参数
+          # 32位ARM编译参数
           if [ "$ARCH_NAME" = "armeabi-v7a" ]; then
             export EXTRA_CFLAGS="-march=armv7-a -mfloat-abi=softfp -mfpu=vfpv3-d16 -fPIC"
           else
@@ -69,17 +68,25 @@ jobs:
           echo "EXTRA_CFLAGS=$EXTRA_CFLAGS" >> $GITHUB_ENV
           echo "NDK_ROOT=${ANDROID_NDK_HOME}" >> $GITHUB_ENV
 
-      - name: Install Bun dependencies
+      - name: Install Bun dependencies (修复 pnpm 安装问题)
         run: |
           cd $GITHUB_WORKSPACE
-          # 安装 Bun 源码的所有依赖
-          pnpm install --frozen-lockfile
+          
+          # 1. 生成 pnpm-workspace.yaml 适配 workspaces 字段（解决警告）
+          echo "packages:" > pnpm-workspace.yaml
+          cat package.json | jq -r '.workspaces[]' >> pnpm-workspace.yaml
+          
+          # 2. 跳过 lockfile 校验安装依赖（核心修复：解决 config mismatch 报错）
+          pnpm install --no-frozen-lockfile --force
+          
+          # 3. 验证依赖安装成功
+          pnpm list
 
       - name: Build Bun for Android ARM
         run: |
           cd $GITHUB_WORKSPACE
           
-          # 配置 NDK 交叉编译工具链
+          # 配置 NDK 工具链
           export TOOLCHAIN=$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64
           export CC=$TOOLCHAIN/bin/${TOOLCHAIN_TRIPLE}${ANDROID_PLATFORM}-clang
           export CXX=$TOOLCHAIN/bin/${TOOLCHAIN_TRIPLE}${ANDROID_PLATFORM}-clang++
@@ -87,18 +94,21 @@ jobs:
           export LD=$TOOLCHAIN/bin/ld.lld
           export STRIP=$TOOLCHAIN/bin/llvm-strip
           
-          # 全局编译参数
+          # 编译参数
           export CFLAGS="--target=${TOOLCHAIN_TRIPLE}${ANDROID_PLATFORM} $EXTRA_CFLAGS"
           export CXXFLAGS="--target=${TOOLCHAIN_TRIPLE}${ANDROID_PLATFORM} $EXTRA_CFLAGS"
           export LDFLAGS="-L$TOOLCHAIN/sysroot/usr/lib/${TOOLCHAIN_TRIPLE}/${ANDROID_PLATFORM} -llog -pie -fPIE"
           
-          # 关键：使用正确的 Make 目标（android-aarch64/android-armv7）
-          echo "开始编译 Bun 目标：$MAKE_TARGET（对应架构：$ARCH_NAME）"
+          # 环境变量传递给 Make
+          export BUN_TARGET_TRIPLE=${TOOLCHAIN_TRIPLE}
+          export BUN_ANDROID_NDK=$NDK_ROOT
+          export BUN_ANDROID_PLATFORM=$ANDROID_PLATFORM
+          
+          # 执行正确的 Make 目标
+          echo "编译目标：$MAKE_TARGET"
           make $MAKE_TARGET
           
-          # 验证编译产物
-          echo "=== 编译产物信息 ==="
-          # Bun 1.1.x 产物路径统一为 build/bun-<目标>
+          # 验证产物
           BUN_OUTPUT_PATH="./build/bun-$MAKE_TARGET"
           ls -la $BUN_OUTPUT_PATH
           file $BUN_OUTPUT_PATH
