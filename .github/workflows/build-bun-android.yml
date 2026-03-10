@@ -1,4 +1,4 @@
-name: Build Bun for Android
+name: Build Bun for Android ARM64
 
 on: [workflow_dispatch]
 
@@ -12,8 +12,7 @@ jobs:
           repository: oven-sh/bun
           ref: bun-v1.1.20
           submodules: recursive
-          # 关键：指定路径，确保工作目录正确
-          path: bun-source
+          fetch-depth: 0
 
       - name: Install Android NDK
         uses: nttld/setup-ndk@v1
@@ -21,38 +20,43 @@ jobs:
           ndk-version: r25b
           add-to-path: true
 
-      - name: Install Bun runtime
-        run: curl -fsSL https://bun.sh/install | bash
-
-      - name: Build Bun for Android ARM64
+      - name: Install build dependencies
         run: |
-          # 进入 Bun 源码根目录（关键修复）
-          cd bun-source
-          
-          # 配置环境变量
+          sudo apt update && sudo apt install -y \
+            build-essential cmake ninja-build python3 python3-pip \
+            zig libssl-dev git curl unzip
+          # 安装 Bun 仅用于依赖管理（非编译）
+          curl -fsSL https://bun.sh/install | bash
           export PATH="$HOME/.bun/bin:$PATH"
-          export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
+
+      - name: Build Bun for Linux ARM64 (Android compatible)
+        run: |
+          export PATH="$HOME/.bun/bin:$PATH"
+          export ANDROID_NDK_ROOT=$ANDROID_NDK_HOME
+          export TARGET_ARCH=aarch64
+          export TOOLCHAIN=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64
+          
+          # 配置交叉编译环境
           export CC=$TOOLCHAIN/bin/aarch64-linux-android24-clang
           export CXX=$TOOLCHAIN/bin/aarch64-linux-android24-clang++
-          export CFLAGS="-fPIC"
-          export CXXFLAGS="-fPIC"
+          export AR=$TOOLCHAIN/bin/llvm-ar
+          export LD=$TOOLCHAIN/bin/ld.lld
+          export CFLAGS="-fPIC --target=aarch64-linux-android24"
+          export CXXFLAGS="-fPIC --target=aarch64-linux-android24"
           
-          # 安装依赖
+          # 安装 Bun 源码依赖
           bun install --force
           
-          # 关键：使用正确的 Bun 源码入口文件
-          # Bun 源码的实际入口是 packages/bun/src/main.ts
-          bun build packages/bun/src/main.ts \
-            --compile \
-            --outfile ../bun-android-arm64-v8a \
-            --minify \
-            --target=bun \
-            --cc $CC \
-            --cxx $CXX
+          # 执行 Bun 官方 Linux ARM64 编译脚本（Android 兼容）
+          ./scripts/build-linux.sh --arch $TARGET_ARCH
+          
+          # 验证产物
+          ls -la ./build/out/bun-linux-$TARGET_ARCH
+          file ./build/out/bun-linux-$TARGET_ARCH
 
-      - name: Upload build artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: bun-android-arm64-v8a
-          path: ./bun-android-arm64-v8a
+          path: ./build/out/bun-linux-aarch64
           retention-days: 7
