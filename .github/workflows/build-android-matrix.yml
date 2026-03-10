@@ -36,25 +36,31 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      - name: Install Zig manually
+      - name: Install Zig (oven-sh fork)
         run: |
-          # 下载 Bun 兼容的 Zig 版本（0.15.2，适配 Bun v1.3.10）
-          ZIG_VERSION=0.12.1
-          ZIG_ARCH=linux-x86_64
-          curl -fsSL https://ziglang.org/download/$ZIG_VERSION/zig-$ZIG_ARCH-$ZIG_VERSION.tar.xz -o zig.tar.xz
+          # Bun 使用自定义的 Zig fork
+          # Commit: c031cbebf5b063210473ff5204a24ebfb2492c72 (约对应 0.13.x)
+          ZIG_COMMIT=c031cbebf5b063210473ff5204a24ebfb2492c72
+          ZIG_ARCH=x86_64
+          ZIG_OS=linux-musl
+          ZIG_NAME=bootstrap-${ZIG_ARCH}-${ZIG_OS}
+          ZIG_FILENAME=${ZIG_NAME}.zip
+          
+          curl -fsSL https://github.com/oven-sh/zig/releases/download/autobuild-${ZIG_COMMIT}/${ZIG_FILENAME} -o zig.zip
           
           # zig安装目录
           ZIG_DIR="$HOME/zig"
           mkdir -p ${ZIG_DIR}
           
-          # 解压到 $HOME/zig （加入环境变量）
-          sudo tar -xf zig.tar.xz -C ${ZIG_DIR} --strip-components=1
+          # 解压
+          unzip -q zig.zip -d ${ZIG_DIR}
+          mv ${ZIG_DIR}/${ZIG_NAME}/* ${ZIG_DIR}/
+          rm -rf ${ZIG_DIR}/${ZIG_NAME}
+          
           # 验证 Zig 安装
           ${ZIG_DIR}/zig version
           
-          # 设置环境变量供后续步骤使用
           echo "${ZIG_DIR}" >> $GITHUB_PATH
-          echo "ZIG_INSTALLED=true" >> $GITHUB_OUTPUT
       - name: Install Android NDK
         uses: nttld/setup-ndk@v1
         with:
