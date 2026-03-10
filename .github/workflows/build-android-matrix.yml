@@ -5,14 +5,7 @@ name: Build Bun for Android ARM v7 and v8
 # See: https://github.com/oven-sh/WebKit/releases
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
-    inputs:
-      force_local_webkit:
-        description: "Force local WebKit build (skip download)"
-        type: boolean
-        default: false
 
 jobs:
   build-bun-android:
