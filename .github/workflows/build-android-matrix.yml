@@ -47,10 +47,10 @@ jobs:
           ZIG_DIR="$HOME/zig"
           mkdir -p ${ZIG_DIR}
           
-          # 解压到 /usr/local （加入环境变量）
+          # 解压到 $HOME/zig （加入环境变量）
           sudo tar -xf zig.tar.xz -C ${ZIG_DIR} --strip-components=1
           # 验证 Zig 安装
-          ${ZIG_DIR}/zig/zig version
+          ${ZIG_DIR}/zig version
           
           # 设置环境变量供后续步骤使用
           echo "${ZIG_DIR}" >> $GITHUB_PATH
