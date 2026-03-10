@@ -1,91 +1,30 @@
-name: Build Bun for Android (Bytecode + Runtime)
+name: Build Bun for Android
 
-on:
-  push:
-    branches: [main]
-  workflow_dispatch:
+on: [workflow_dispatch]
 
 jobs:
-  build-bun-android:
+  build:
     runs-on: ubuntu-22.04
-    strategy:
-      fail-fast: false
-      matrix:
-        arch_config:
-          - arch_name: arm64-v8a
-            target_triple: aarch64-linux-android
-            ndk_arch: arm64
-          - arch_name: armeabi-v7a
-            target_triple: armv7a-linux-androideabi
-            ndk_arch: arm
     steps:
-      - name: Checkout Bun source code
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           repository: oven-sh/bun
           ref: bun-v1.1.20
           submodules: recursive
-          fetch-depth: 0
-
-      - name: Install Android NDK
+      - name: Install NDK
         uses: nttld/setup-ndk@v1
         with:
           ndk-version: r25b
-          add-to-path: true
-
-      - name: Setup build environment
+      - name: Install Bun
+        run: curl -fsSL https://bun.sh/install | bash
+      - name: Build Bun
         run: |
-          sudo apt update && sudo apt install -y \
-            build-essential cmake ninja-build python3 python3-pip \
-            curl unzip pkg-config libssl-dev file git
-          curl -fsSL https://bun.sh/install | bash
           export PATH="$HOME/.bun/bin:$PATH"
-          echo "PATH=$HOME/.bun/bin:$PATH" >> $GITHUB_ENV
-          bun --version
-
-      - name: Step 1: Build Bun for Linux ARM (Android compatible)
-        run: |
-          cd $GITHUB_WORKSPACE
-          # 先赋值变量，避免YAML解析错误
-          TRIPLE="${{ matrix.arch_config.target_triple }}"
-          TOOLCHAIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64"
-          export CC="$TOOLCHAIN/bin/${TRIPLE}24-clang"
-          export CXX="$TOOLCHAIN/bin/${TRIPLE}24-clang++"
-          export AR="$TOOLCHAIN/bin/llvm-ar"
-          export LD="$TOOLCHAIN/bin/ld.lld"
-          export CFLAGS="-fPIC"
-          export CXXFLAGS="-fPIC"
-          
           bun install --force
-          bun build src/bun.ts \
-            --compile \
-            --outfile "bun-linux-${{ matrix.arch_config.arch_name }}" \
-            --minify
-          file "./bun-linux-${{ matrix.arch_config.arch_name }}"
-
-      - name: Step 2: Compile TS to Bun Bytecode (Android runnable)
-        run: |
-          cd $GITHUB_WORKSPACE
-          cat > test.ts << EOF
-          interface User {
-            name: string;
-            age: number;
-          }
-          const user: User = { name: "Android Bun", age: 1 };
-          console.log(\`Hello \${user.name}!\`);
-          EOF
-          
-          bun build test.ts \
-            --compile \
-            --outfile "test-android-${{ matrix.arch_config.arch_name }}.bun" \
-            --target=bun
-          ls -la "./test-android-${{ matrix.arch_config.arch_name }}.bun"
-
-      - name: Upload artifacts
+          bun build src/bun.ts --compile --outfile bun-android-arm64-v8a --minify
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: "bun-android-${{ matrix.arch_config.arch_name }}"
-          path: |
-            ./bun-linux-${{ matrix.arch_config.arch_name }}
-            ./test-android-${{ matrix.arch_config.arch_name }}.bun
-          retention-days: 7
+          name: bun-android-arm64-v8a
+          path: ./bun-android-arm64-v8a
