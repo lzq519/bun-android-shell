@@ -20,23 +20,38 @@ jobs:
           ndk-version: r25b
           add-to-path: true
 
-      - name: Install build dependencies
+      - name: Install system dependencies (不含zig)
         run: |
           sudo apt update && sudo apt install -y \
             build-essential cmake ninja-build python3 python3-pip \
-            zig libssl-dev git curl unzip
-          # 安装 Bun 仅用于依赖管理（非编译）
+            libssl-dev git curl unzip
+          # 31个包可升级不影响编译，跳过升级避免耗时
+          sudo apt upgrade -y || true
+
+      - name: 手动安装 Zig 编译器（Bun 编译依赖）
+        run: |
+          # 下载 Bun 兼容的 Zig 版本（0.11.0，适配 Bun v1.1.20）
+          ZIG_VERSION=0.11.0
+          ZIG_ARCH=x86_64-linux
+          curl -fsSL https://ziglang.org/download/$ZIG_VERSION/zig-$ZIG_ARCH-$ZIG_VERSION.tar.xz -o zig.tar.xz
+          # 解压到 /usr/local （加入环境变量）
+          sudo tar -xf zig.tar.xz -C /usr/local --strip-components=1
+          # 验证 Zig 安装
+          zig version
+
+      - name: Install Bun runtime (仅用于依赖管理)
+        run: |
           curl -fsSL https://bun.sh/install | bash
           export PATH="$HOME/.bun/bin:$PATH"
+          echo "PATH=$HOME/.bun/bin:$PATH" >> $GITHUB_ENV
 
       - name: Build Bun for Linux ARM64 (Android compatible)
         run: |
-          export PATH="$HOME/.bun/bin:$PATH"
+          # 配置交叉编译环境
           export ANDROID_NDK_ROOT=$ANDROID_NDK_HOME
           export TARGET_ARCH=aarch64
           export TOOLCHAIN=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64
           
-          # 配置交叉编译环境
           export CC=$TOOLCHAIN/bin/aarch64-linux-android24-clang
           export CXX=$TOOLCHAIN/bin/aarch64-linux-android24-clang++
           export AR=$TOOLCHAIN/bin/llvm-ar
@@ -47,7 +62,7 @@ jobs:
           # 安装 Bun 源码依赖
           bun install --force
           
-          # 执行 Bun 官方 Linux ARM64 编译脚本（Android 兼容）
+          # 执行 Bun 官方编译脚本
           ./scripts/build-linux.sh --arch $TARGET_ARCH
           
           # 验证产物
