@@ -1,0 +1,93 @@
+name: build-bun-android
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    env:
+      ANDROID_NDK_VERSION: r26d
+      API_LEVEL: 24
+      TARGET: aarch64-linux-android
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # install deps
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git \
+            cmake \
+            ninja-build \
+            curl \
+            unzip \
+            python3 \
+            build-essential
+
+      # install zig
+      - name: Install Zig
+        run: |
+          curl -L https://ziglang.org/builds/zig-linux-x86_64-0.12.0.tar.xz -o zig.tar.xz
+          tar -xf zig.tar.xz
+          echo "$PWD/zig-linux-x86_64-0.12.0" >> $GITHUB_PATH
+
+      # download android ndk
+      - name: Install Android NDK
+        run: |
+          curl -L https://dl.google.com/android/repository/android-ndk-${ANDROID_NDK_VERSION}-linux.zip -o ndk.zip
+          unzip ndk.zip
+          echo "ANDROID_NDK_HOME=$PWD/android-ndk-${ANDROID_NDK_VERSION}" >> $GITHUB_ENV
+
+      # setup toolchain
+      - name: Setup NDK toolchain
+        run: |
+          export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
+          echo "$TOOLCHAIN/bin" >> $GITHUB_PATH
+
+      # clone bun
+      - name: Clone bun
+        run: |
+          git clone https://github.com/oven-sh/bun.git
+          cd bun
+          git submodule update --init --recursive
+
+      # build bun for android
+      - name: Build bun (android)
+        run: |
+          cd bun
+
+          export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
+          export CC=$TOOLCHAIN/bin/aarch64-linux-android${API_LEVEL}-clang
+          export CXX=$TOOLCHAIN/bin/aarch64-linux-android${API_LEVEL}-clang++
+
+          export AR=$TOOLCHAIN/bin/llvm-ar
+          export RANLIB=$TOOLCHAIN/bin/llvm-ranlib
+          export STRIP=$TOOLCHAIN/bin/llvm-strip
+
+          mkdir build
+          cd build
+
+          cmake .. \
+            -G Ninja \
+            -DCMAKE_SYSTEM_NAME=Android \
+            -DCMAKE_ANDROID_ARCH_ABI=arm64-v8a \
+            -DCMAKE_ANDROID_NDK=$ANDROID_NDK_HOME \
+            -DCMAKE_ANDROID_API=${API_LEVEL} \
+            -DCMAKE_C_COMPILER=$CC \
+            -DCMAKE_CXX_COMPILER=$CXX \
+            -DCMAKE_BUILD_TYPE=Release
+
+          ninja bun
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bun-android
+          path: bun/build/bun
