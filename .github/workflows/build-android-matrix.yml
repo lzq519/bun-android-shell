@@ -42,10 +42,16 @@ jobs:
           ZIG_VERSION=0.15.2
           ZIG_ARCH=x86_64-linux
           curl -fsSL https://ziglang.org/download/$ZIG_VERSION/zig-$ZIG_ARCH-$ZIG_VERSION.tar.xz -o zig.tar.xz
+          ZIG_DIR="$HOME/zig"
+          
           # 解压到 /usr/local （加入环境变量）
-          sudo tar -xf zig.tar.xz -C /usr/local --strip-components=1
+          sudo tar -xf zig.tar.xz -C ${ZIG_DIR} --strip-components=1
           # 验证 Zig 安装
-          zig version
+          ${ZIG_DIR}/zig/zig version
+          
+          # 设置环境变量供后续步骤使用
+          echo "${ZIG_DIR}" >> $GITHUB_PATH
+          echo "ZIG_INSTALLED=true" >> $GITHUB_OUTPUT
       - name: Install Android NDK
         uses: nttld/setup-ndk@v1
         with:
