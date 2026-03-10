@@ -1,97 +1,105 @@
-name: build-bun-android
+name: Build Bun for Android (Bytecode + Runtime)
 
 on:
+  push:
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
-  build:
+  build-bun-android:
     runs-on: ubuntu-22.04
-
     strategy:
+      fail-fast: false
       matrix:
-        include:
-          - arch: armv7
-            target: armv7a-linux-androideabi
-            abi: armeabi-v7a
-          - arch: armv8
-            target: aarch64-linux-android
-            abi: arm64-v8a
-
-    env:
-      API_LEVEL: 24
-      ANDROID_NDK_VERSION: r26d
-
+        arch_config:
+          - arch_name: arm64-v8a
+            target_triple: aarch64-linux-android
+            ndk_arch: arm64
+          - arch_name: armeabi-v7a
+            target_triple: armv7a-linux-androideabi
+            ndk_arch: arm
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Install deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            git \
-            cmake \
-            ninja-build \
-            curl \
-            unzip \
-            build-essential
-
-      - name: Install Zig
-        run: |
-          curl -L https://ziglang.org/builds/zig-linux-x86_64-0.12.0.tar.xz -o zig.tar.xz
-          tar -xf zig.tar.xz
-          echo "$PWD/zig-linux-x86_64-0.12.0" >> $GITHUB_PATH
+      - name: Checkout Bun source code
+        uses: actions/checkout@v4
+        with:
+          repository: oven-sh/bun
+          ref: bun-v1.1.20
+          submodules: recursive
+          fetch-depth: 0
 
       - name: Install Android NDK
-        run: |
-          curl -L https://dl.google.com/android/repository/android-ndk-${ANDROID_NDK_VERSION}-linux.zip -o ndk.zip
-          unzip ndk.zip
-          echo "ANDROID_NDK_HOME=$PWD/android-ndk-${ANDROID_NDK_VERSION}" >> $GITHUB_ENV
-
-      - name: Setup toolchain
-        run: |
-          echo "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
-
-      - name: Clone bun
-        run: |
-          git clone https://github.com/oven-sh/bun.git
-          cd bun
-          git submodule update --init --recursive
-
-      - name: Build bun
-        run: |
-          cd bun
-
-          TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
-
-          if [ "${{ matrix.arch }}" = "armv8" ]; then
-            export CC=$TOOLCHAIN/bin/aarch64-linux-android${API_LEVEL}-clang
-            export CXX=$TOOLCHAIN/bin/aarch64-linux-android${API_LEVEL}-clang++
-          else
-            export CC=$TOOLCHAIN/bin/armv7a-linux-androideabi${API_LEVEL}-clang
-            export CXX=$TOOLCHAIN/bin/armv7a-linux-androideabi${API_LEVEL}-clang++
-          fi
-
-          mkdir build
-          cd build
-
-          cmake .. \
-            -G Ninja \
-            -DCMAKE_SYSTEM_NAME=Android \
-            -DCMAKE_ANDROID_ARCH_ABI=${{ matrix.abi }} \
-            -DCMAKE_ANDROID_NDK=$ANDROID_NDK_HOME \
-            -DCMAKE_ANDROID_API=${API_LEVEL} \
-            -DCMAKE_C_COMPILER=$CC \
-            -DCMAKE_CXX_COMPILER=$CXX \
-            -DCMAKE_BUILD_TYPE=Release
-
-          ninja bun
-
-      - name: Package
-        run: |
-          mkdir -p out/${{ matrix.arch }}
-          cp bun/build/bun out/${{ matrix.arch }}/
-
-      - uses: actions/upload-artifact@v4
+        uses: nttld/setup-ndk@v1
         with:
-          name: bun-android-${{ matrix.arch }}
-          path: out/${{ matrix.arch }}
+          ndk-version: r25b
+          add-to-path: true
+
+      - name: Setup build environment
+        run: |
+          # 安装系统依赖
+          sudo apt update && sudo apt install -y \
+            build-essential cmake ninja-build python3 python3-pip \
+            curl unzip pkg-config libssl-dev file git
+          
+          # 安装 Bun 运行时（用于生成字节码）
+          curl -fsSL https://bun.sh/install | bash
+          export PATH="$HOME/.bun/bin:$PATH"
+          echo "PATH=$HOME/.bun/bin:$PATH" >> $GITHUB_ENV
+          
+          # 验证 Bun 安装
+          bun --version
+
+      - name: Step 1: 编译 Bun 源码为 Linux ARM 版本（用于 Android 运行）
+        run: |
+          cd $GITHUB_WORKSPACE
+          
+          # 配置 NDK 交叉编译环境
+          export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
+          export CC=$TOOLCHAIN/bin/${{ matrix.arch_config.target_triple }}24-clang
+          export CXX=$TOOLCHAIN/bin/${{ matrix.arch_config.target_triple }}24-clang++
+          export AR=$TOOLCHAIN/bin/llvm-ar
+          export LD=$TOOLCHAIN/bin/ld.lld
+          export CFLAGS="-fPIC"
+          export CXXFLAGS="-fPIC"
+          
+          # 安装 Bun 依赖
+          bun install --force
+          
+          # 编译 Bun 为 ARM 架构可执行文件（兼容 Android）
+          bun build src/bun.ts \
+            --compile \
+            --outfile bun-linux-${{ matrix.arch_config.arch_name }} \
+            --minify
+          
+          # 验证产物架构
+          file ./bun-linux-${{ matrix.arch_config.arch_name }}
+
+      - name: Step 2: 示例 - 编译 TS 为 Bun 字节码（Android 可运行）
+        run: |
+          cd $GITHUB_WORKSPACE
+          # 创建测试 TS 文件
+          cat > test.ts << EOF
+          interface User {
+            name: string;
+            age: number;
+          }
+          const user: User = { name: "Android Bun", age: 1 };
+          console.log(\`Hello \${user.name}!\`);
+          EOF
+          
+          # 编译 TS 为 Bun 字节码（跨平台，Android 可执行）
+          bun build test.ts \
+            --compile \
+            --outfile test-android-${{ matrix.arch_config.arch_name }}.bun \
+            --target=bun
+          
+          # 验证字节码
+          ls -la ./test-android-${{ matrix.arch_config.arch_name }}.bun
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bun-android-${{ matrix.arch_config.arch_name }}
+          path: |
+            ./bun-linux-${{ matrix.arch_config.arch_name }}
+            ./test-android-${{ matrix.arch_config.arch_name }}.bun
+          retention-days: 7
