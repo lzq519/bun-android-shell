@@ -3,66 +3,83 @@ name: Build Bun for Android ARM
 on:
   push:
     branches: [ main ]
-  workflow_dispatch: # 手动触发
+  workflow_dispatch:
 
 jobs:
   build-bun-android:
     runs-on: ubuntu-22.04
     strategy:
-      fail-fast: false # 一个架构失败不影响另一个
+      fail-fast: false
       matrix:
-        arch: [arm64-v8a, armeabi-v7a] # 仅保留ARM架构
+        # 架构映射：明确指定 Bun Make 目标 + 显示名称
+        arch_config:
+          - arch_name: arm64-v8a
+            make_target: android-aarch64
+            toolchain_triple: aarch64-linux-android
+            target_arch: aarch64
+          - arch_name: armeabi-v7a
+            make_target: android-armv7
+            toolchain_triple: armv7a-linux-androideabi
+            target_arch: armv7
     steps:
       - name: Checkout Bun source code
         uses: actions/checkout@v4
         with:
           repository: oven-sh/bun
-          ref: bun-v1.1.0 # 稳定版本，避免源码变动问题
+          ref: bun-v1.1.20 # 最新稳定版，Makefile 规则更完善
           submodules: recursive
           fetch-depth: 0
 
       - name: Install Android NDK
         uses: nttld/setup-ndk@v1
         with:
-          ndk-version: r26b # 适配Bun 1.1.x的NDK版本
+          ndk-version: r25b # 兼容 Bun 编译的稳定版本
           add-to-path: true
 
       - name: Setup build environment
         run: |
-          # 安装系统依赖
+          # 安装编译依赖
           sudo apt update && sudo apt install -y \
             build-essential cmake ninja-build python3 python3-pip \
-            curl unzip pkg-config libssl-dev file
+            curl unzip pkg-config libssl-dev file git
           
-          # 按架构配置编译参数（重点补充armeabi-v7a的32位ARM参数）
-          case ${{ matrix.arch }} in
-            arm64-v8a)
-              export TARGET_ARCH=aarch64
-              export TOOLCHAIN_TRIPLE=aarch64-linux-android
-              export ANDROID_PLATFORM=android-24
-              export EXTRA_CFLAGS="" # 64位无需额外参数
-              ;;
-            armeabi-v7a)
-              export TARGET_ARCH=arm
-              export TOOLCHAIN_TRIPLE=armv7a-linux-androideabi
-              export ANDROID_PLATFORM=android-24
-              # 32位ARM关键参数：指定架构、浮点运算、位置无关代码
-              export EXTRA_CFLAGS="-march=armv7-a -mfloat-abi=softfp -mfpu=vfpv3-d16 -fPIC"
-              ;;
-          esac
+          # 安装 Bun 编译依赖的包管理器
+          npm install -g pnpm
           
-          # 持久化环境变量到后续步骤
-          echo "TARGET_ARCH=$TARGET_ARCH" >> $GITHUB_ENV
+          # 提取矩阵中的架构配置
+          export ARCH_NAME=${{ matrix.arch_config.arch_name }}
+          export MAKE_TARGET=${{ matrix.arch_config.make_target }}
+          export TOOLCHAIN_TRIPLE=${{ matrix.arch_config.toolchain_triple }}
+          export TARGET_ARCH=${{ matrix.arch_config.target_arch }}
+          export ANDROID_PLATFORM=android-24
+          
+          # 为 armeabi-v7a 补充 32 位 ARM 编译参数
+          if [ "$ARCH_NAME" = "armeabi-v7a" ]; then
+            export EXTRA_CFLAGS="-march=armv7-a -mfloat-abi=softfp -mfpu=vfpv3-d16 -fPIC"
+          else
+            export EXTRA_CFLAGS="-fPIC"
+          fi
+          
+          # 持久化环境变量
+          echo "ARCH_NAME=$ARCH_NAME" >> $GITHUB_ENV
+          echo "MAKE_TARGET=$MAKE_TARGET" >> $GITHUB_ENV
           echo "TOOLCHAIN_TRIPLE=$TOOLCHAIN_TRIPLE" >> $GITHUB_ENV
+          echo "TARGET_ARCH=$TARGET_ARCH" >> $GITHUB_ENV
           echo "ANDROID_PLATFORM=$ANDROID_PLATFORM" >> $GITHUB_ENV
           echo "EXTRA_CFLAGS=$EXTRA_CFLAGS" >> $GITHUB_ENV
           echo "NDK_ROOT=${ANDROID_NDK_HOME}" >> $GITHUB_ENV
 
-      - name: Build Bun (Android ARM)
+      - name: Install Bun dependencies
+        run: |
+          cd $GITHUB_WORKSPACE
+          # 安装 Bun 源码的所有依赖
+          pnpm install --frozen-lockfile
+
+      - name: Build Bun for Android ARM
         run: |
           cd $GITHUB_WORKSPACE
           
-          # 配置NDK交叉编译工具链
+          # 配置 NDK 交叉编译工具链
           export TOOLCHAIN=$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64
           export CC=$TOOLCHAIN/bin/${TOOLCHAIN_TRIPLE}${ANDROID_PLATFORM}-clang
           export CXX=$TOOLCHAIN/bin/${TOOLCHAIN_TRIPLE}${ANDROID_PLATFORM}-clang++
@@ -70,29 +87,25 @@ jobs:
           export LD=$TOOLCHAIN/bin/ld.lld
           export STRIP=$TOOLCHAIN/bin/llvm-strip
           
-          # 全局编译参数（合并通用参数和架构专属参数）
-          export CFLAGS="--target=${TOOLCHAIN_TRIPLE}${ANDROID_PLATFORM} -fPIC $EXTRA_CFLAGS"
-          export CXXFLAGS="--target=${TOOLCHAIN_TRIPLE}${ANDROID_PLATFORM} -fPIC $EXTRA_CFLAGS"
+          # 全局编译参数
+          export CFLAGS="--target=${TOOLCHAIN_TRIPLE}${ANDROID_PLATFORM} $EXTRA_CFLAGS"
+          export CXXFLAGS="--target=${TOOLCHAIN_TRIPLE}${ANDROID_PLATFORM} $EXTRA_CFLAGS"
           export LDFLAGS="-L$TOOLCHAIN/sysroot/usr/lib/${TOOLCHAIN_TRIPLE}/${ANDROID_PLATFORM} -llog -pie -fPIE"
           
-          # 安装Bun源码依赖
-          npm install -g pnpm
-          pnpm install
+          # 关键：使用正确的 Make 目标（android-aarch64/android-armv7）
+          echo "开始编译 Bun 目标：$MAKE_TARGET（对应架构：$ARCH_NAME）"
+          make $MAKE_TARGET
           
-          # 编译Bun源码（适配ARM架构）
-          export BUN_TARGET_TRIPLE=${TOOLCHAIN_TRIPLE}
-          export BUN_ANDROID_NDK=$NDK_ROOT
-          export BUN_ANDROID_PLATFORM=$ANDROID_PLATFORM
-          make android-${TARGET_ARCH}
-          
-          # 验证产物：检查文件架构和可用性
+          # 验证编译产物
           echo "=== 编译产物信息 ==="
-          ls -la ./build/out/bun-android-${TARGET_ARCH}
-          file ./build/out/bun-android-${TARGET_ARCH}
+          # Bun 1.1.x 产物路径统一为 build/bun-<目标>
+          BUN_OUTPUT_PATH="./build/bun-$MAKE_TARGET"
+          ls -la $BUN_OUTPUT_PATH
+          file $BUN_OUTPUT_PATH
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: bun-android-${{ matrix.arch }}
-          path: ./build/out/bun-android-${TARGET_ARCH}
-          retention-days: 7 # 产物保留7天，可按需调整
+          name: bun-android-${{ env.ARCH_NAME }}
+          path: ./build/bun-${{ env.MAKE_TARGET }}
+          retention-days: 7
